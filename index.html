@@ -285,7 +285,7 @@
     <!-- LOGIQUE APPLICATIVE (JavaScript Module) -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, getIdTokenResult } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, onSnapshot, addDoc, deleteDoc, query, where, getDocs, arrayUnion } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
         // ==========================================
@@ -306,8 +306,9 @@
         const db = getFirestore(app);
         const appId = "sesameouvretoi";
 
-        const ADMIN_EMAIL = "dpstay@1.net";
-        const ADMIN_SECRET_KEY = "2026"; 
+        // Le rôle administrateur vient exclusivement d'un Custom Claim Firebase
+        // sécurisé (`admin: true`). Aucun identifiant ni secret admin n'est livré
+        // au navigateur.
 
         // ==========================================
         // 2. CONFIGURATION DES SERVICES DISPONIBLES
@@ -381,7 +382,6 @@
             lastName: '',
             email: '',
             password: '',
-            adminSecret: '',
             showPassword: false,    
             
             // États Firestore / Métiers
@@ -630,7 +630,8 @@
             window.appState.authLoading = false; 
 
             if (currentUser) {
-                window.appState.isAdmin = currentUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+                const tokenResult = await getIdTokenResult(currentUser, true);
+                window.appState.isAdmin = tokenResult.claims.admin === true;
 
                 try {
                     if (!window.appState.isAdmin) {
@@ -652,6 +653,7 @@
                             lastName: '',
                             contactEmail: currentUser.email,
                             phone: '',
+                            role: window.appState.isAdmin ? 'admin' : 'client',
                             authVerified: true,
                             lastAuthenticatedAt: Date.now(),
                             status: window.appState.isAdmin ? 'active' : 'inactive',
@@ -1195,7 +1197,7 @@
                 
                 if (stripeClientId) {
                     const verifiedClient = window.appState.allProfiles.find(client =>
-                        client.id === stripeClientId && client.email !== ADMIN_EMAIL && client.authVerified === true);
+                        client.id === stripeClientId && client.role !== 'admin' && client.id !== window.appState.user?.uid && client.authVerified === true);
                     if (!verifiedClient) {
                         window.appState.selectedStripeClientId = '';
                         window.showToast("Ce compte client n’est pas vérifié par Firebase.", "error");
@@ -1239,11 +1241,11 @@
 
         window.setAuthRole = (role) => {
             window.appState.authRole = role;
+            if (role === 'admin') window.appState.isLoginMode = true;
             window.appState.authError = '';
             window.appState.authSuccessMessage = ''; // Reset messages à l'onglet change
             window.appState.email = '';
             window.appState.password = '';
-            window.appState.adminSecret = '';
             window.appState.firstName = '';
             window.appState.lastName = '';
             window.appState.authLoading = false; 
@@ -1255,19 +1257,16 @@
             
             const emailInput = document.getElementById('auth-email');
             const passwordInput = document.getElementById('auth-password');
-            const secretInput = document.getElementById('auth-secret');
             const firstNameInput = document.getElementById('auth-first-name');
             const lastNameInput = document.getElementById('auth-last-name');
             
             const email = emailInput ? emailInput.value.trim() : '';
             const password = passwordInput ? passwordInput.value : '';
-            const adminSecret = secretInput ? secretInput.value.trim() : '';
             const firstName = firstNameInput ? firstNameInput.value.trim() : '';
             const lastName = lastNameInput ? lastNameInput.value.trim() : '';
             
             window.appState.email = email;
             window.appState.password = password;
-            window.appState.adminSecret = adminSecret;
             window.appState.firstName = firstName;
             window.appState.lastName = lastName;
             
@@ -1279,27 +1278,12 @@
             const isLoginMode = window.appState.isLoginMode;
             const authRole = window.appState.authRole;
 
-            if (authRole === 'admin') {
-                if (email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-                    window.appState.authError = "Identifiant Admin incorrect. Vous devez utiliser l'adresse d'administration réservée.";
-                    window.appState.authLoading = false;
-                    renderApp();
-                    return;
-                }
-                
-                if (!isLoginMode && adminSecret !== ADMIN_SECRET_KEY) {
-                    window.appState.authError = "Clé d'activation Admin invalide. Enregistrement de l'instance ROOT bloqué.";
-                    window.appState.authLoading = false;
-                    renderApp();
-                    return;
-                }
-            } else {
-                if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-                    window.appState.authError = "L'adresse d'administration doit être utilisée uniquement dans l'Espace Admin dédié.";
-                    window.appState.authLoading = false;
-                    renderApp();
-                    return;
-                }
+            if (authRole === 'admin' && !isLoginMode) {
+                window.appState.authError = "La création d’un administrateur est désactivée sur le site. Utilisez le compte administrateur déjà autorisé par Firebase.";
+                window.appState.authLoading = false;
+                renderApp();
+                return;
+            } else if (authRole === 'client') {
                 if (!isLoginMode && (!firstName || !lastName)) {
                     window.appState.authError = "Le prénom et le nom sont obligatoires pour créer un compte client.";
                     window.appState.authLoading = false;
@@ -1310,19 +1294,28 @@
 
             try {
                 if (isLoginMode) {
-                    await signInWithEmailAndPassword(auth, email, password);
+                    const credential = await signInWithEmailAndPassword(auth, email, password);
+                    const tokenResult = await getIdTokenResult(credential.user, true);
+                    const hasAdminRole = tokenResult.claims.admin === true;
+                    if ((authRole === 'admin') !== hasAdminRole) {
+                        await signOut(auth);
+                        throw new Error(authRole === 'admin'
+                            ? "Ce compte ne possède pas le rôle administrateur Firebase."
+                            : "Ce compte administrateur doit utiliser l’Espace Admin.");
+                    }
                 } else {
                     const credential = await createUserWithEmailAndPassword(auth, email, password);
                     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', credential.user.uid);
                     await setDoc(profileRef, {
                         email,
-                        firstName: authRole === 'client' ? firstName : 'Administrateur',
-                        lastName: authRole === 'client' ? lastName : 'Principal',
+                        firstName,
+                        lastName,
                         contactEmail: email,
                         phone: '',
                         authVerified: true,
                         lastAuthenticatedAt: Date.now(),
-                        status: authRole === 'admin' ? 'active' : 'inactive',
+                        role: 'client',
+                        status: 'inactive',
                         usageTotal: 0,
                         createdAt: Date.now(),
                         services: Object.fromEntries(SERVICES_DATA.map(s => [s.id, { status: 'inactive', subEnd: null, freeReactivationUsed: false }]))
@@ -1361,7 +1354,6 @@
         window.handleLogout = () => {
             window.appState.email = '';
             window.appState.password = '';
-            window.appState.adminSecret = '';
             window.appState.authSuccessMessage = '';
             signOut(auth).then(() => {
                 window.showToast("Déconnexion réussie.");
@@ -1378,7 +1370,7 @@
             if(container) {
                 const { allProfiles } = window.appState;
                 const filtered = allProfiles.filter(client =>
-                    client.email !== ADMIN_EMAIL && client.authVerified === true && (
+                    client.role !== 'admin' && client.id !== window.appState.user?.uid && client.authVerified === true && (
                         client.email.toLowerCase().includes(queryVal.toLowerCase()) ||
                         window.getClientName(client.email).toLowerCase().includes(queryVal.toLowerCase())
                     )
@@ -1433,8 +1425,7 @@
         };
 
         function getAuthScreenHTML() {
-            const { isLoginMode, authLoading, authError, authSuccessMessage, authRole, email, password, adminSecret, showPassword, firstName, lastName } = window.appState;
-            const showSecret = !isLoginMode && authRole === 'admin';
+            const { isLoginMode, authLoading, authError, authSuccessMessage, authRole, email, password, showPassword, firstName, lastName } = window.appState;
 
             return `
             <div class="min-h-screen bg-[#030712] flex flex-col items-center justify-center p-4 font-mono relative">
@@ -1520,18 +1511,6 @@
                       placeholder="${authRole === 'admin' ? 'vous.nêtes-pas@autorisé' : 'nom.prenom@gmail.com'}" />
                   </div>
 
-                  <!-- Clé d'activation Admin visible uniquement sur l'inscription admin -->
-                  ${showSecret ? `
-                  <div id="admin-secret-container" class="animate-fadeIn">
-                    <label class="block text-yellow-500 text-xs mb-1 uppercase font-bold font-mono">Clé d'activation Admin (Licence)</label>
-                    <input id="auth-secret" type="text" required
-                      value="${adminSecret}"
-                      oninput="window.handleAuthInput('adminSecret', this.value)"
-                      class="w-full bg-slate-950 border border-yellow-600/50 rounded-lg px-4 py-2.5 text-yellow-400 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition-all font-mono"
-                      placeholder="Clé secrète de licence" />
-                    <p class="text-[10px] text-slate-500 mt-1 font-sans">Saisie requise pour créer le compte administrateur unique.</p>
-                  </div>` : ''}
-
                   <!-- Mot de passe sécurisé -->
                   <div>
                     <label class="block text-slate-400 text-xs mb-1 uppercase font-mono">Code d'autorisation (Mot de passe)</label>
@@ -1554,9 +1533,9 @@
                 </form>
                 
                 <div class="mt-6 text-center font-mono font-sans">
-                  <button type="button" onclick="window.toggleAuthMode()" class="text-slate-500 hover:text-slate-300 text-xs transition-colors">
+                  ${authRole === 'client' ? `<button type="button" onclick="window.toggleAuthMode()" class="text-slate-500 hover:text-slate-300 text-xs transition-colors">
                     ${isLoginMode ? "Créer un nouveau compte" : "Déjà un compte ? Établir la connexion."}
-                  </button>
+                  </button>` : `<p class="text-[10px] text-slate-500">Les administrateurs sont autorisés uniquement côté Firebase sécurisé.</p>`}
                 </div>
               </div>
             </div>`;
@@ -1630,48 +1609,48 @@ service cloud.firestore {
     match /artifacts/sesameouvretoi/public/data/config/{configId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.email == 'dpstay@1.net';
+        request.auth.token.admin == true;
     }
     match /artifacts/sesameouvretoi/public/data/profiles/{profileId} {
       allow read, write: if request.auth != null &amp;&amp;
-        (request.auth.uid == profileId || request.auth.token.email == 'dpstay@1.net');
+        (request.auth.uid == profileId || request.auth.token.admin == true);
     }
     match /artifacts/sesameouvretoi/public/data/blockedAccounts/{accountId} {
       allow read: if request.auth != null &amp;&amp;
-        (request.auth.uid == accountId || request.auth.token.email == 'dpstay@1.net');
+        (request.auth.uid == accountId || request.auth.token.admin == true);
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.email == 'dpstay@1.net';
+        request.auth.token.admin == true;
     }
     match /artifacts/sesameouvretoi/public/data/communityMembers/{memberId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        (request.auth.uid == memberId || request.auth.token.email == 'dpstay@1.net');
+        (request.auth.uid == memberId || request.auth.token.admin == true);
     }
     match /artifacts/sesameouvretoi/public/data/messages/{messageId} {
       allow read: if request.auth != null &amp;&amp;
-        (resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
+        (resource.data.userId == request.auth.uid || request.auth.token.admin == true);
       allow create: if request.auth != null &amp;&amp;
-        (request.resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
+        (request.resource.data.userId == request.auth.uid || request.auth.token.admin == true);
       allow update: if request.auth != null &amp;&amp;
-        (resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
-      allow delete: if request.auth != null &amp;&amp; request.auth.token.email == 'dpstay@1.net';
+        (resource.data.userId == request.auth.uid || request.auth.token.admin == true);
+      allow delete: if request.auth != null &amp;&amp; request.auth.token.admin == true;
     }
     match /artifacts/sesameouvretoi/public/data/news/{newsId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.email == 'dpstay@1.net';
+        request.auth.token.admin == true;
     }
     match /artifacts/sesameouvretoi/public/data/clientChats/{messageId} {
       allow read: if request.auth != null &amp;&amp; resource.data.groupId == 'sesame-community';
       allow create: if request.auth != null &amp;&amp;
         request.resource.data.groupId == 'sesame-community' &amp;&amp;
         request.resource.data.senderId == request.auth.uid &amp;&amp;
-        (request.auth.token.email == 'dpstay@1.net' ||
+        (request.auth.token.admin == true ||
          get(/databases/$(database)/documents/artifacts/sesameouvretoi/public/data/profiles/$(request.auth.uid)).data.communityChatJoined == true);
       allow update: if request.auth != null &amp;&amp;
-        (request.auth.token.email == 'dpstay@1.net' ||
+        (request.auth.token.admin == true ||
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']));
-      allow delete: if request.auth != null &amp;&amp; request.auth.token.email == 'dpstay@1.net';
+      allow delete: if request.auth != null &amp;&amp; request.auth.token.admin == true;
     }
   }
 }</pre>
@@ -1704,9 +1683,9 @@ service cloud.firestore {
                 'ux-design': { status: 'inactive', subEnd: null }
             };
             const firebaseClientProfiles = window.appState.allProfiles.filter(client =>
-                client.email !== ADMIN_EMAIL && client.authVerified === true);
+                client.role !== 'admin' && client.id !== window.appState.user?.uid && client.authVerified === true);
             const unverifiedClientProfiles = window.appState.allProfiles.filter(client =>
-                client.email && client.email !== ADMIN_EMAIL && client.authVerified !== true);
+                client.email && client.role !== 'admin' && client.id !== window.appState.user?.uid && client.authVerified !== true);
 
             // ----------------------------------------------------
             // CALCUL DES KPI ET STATISTIQUES FINANCIÈRES
@@ -2548,7 +2527,7 @@ service cloud.firestore {
                                         <select id="cred-client-select" onchange="window.adminChangeCredClient(this.value)"
                                             class="w-full bg-slate-950 border border-slate-850 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500 min-h-[36px]">
                                             <option value="">-- Choisir un client --</option>
-                                            ${window.appState.allProfiles.filter(p => p.email !== ADMIN_EMAIL).map(p => `
+                                            ${window.appState.allProfiles.filter(p => p.role !== 'admin' && p.id !== window.appState.user?.uid).map(p => `
                                                 <option value="${p.id}" ${window.appState.selectedCredClientId === p.id ? 'selected' : ''}>
                                                     ${window.getClientName(p.email)} (${p.email})
                                                 </option>
@@ -2798,7 +2777,7 @@ service cloud.firestore {
                                 <select onchange="window.adminChangePriceClient(this.value)"
                                     class="bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-[10px] text-white focus:outline-none focus:border-purple-500 min-h-[28px] flex-1 sm:flex-none">
                                     <option value="">-- Choisir un client --</option>
-                                    ${window.appState.allProfiles.filter(p => p.email !== ADMIN_EMAIL).map(p => `
+                                    ${window.appState.allProfiles.filter(p => p.role !== 'admin' && p.id !== window.appState.user?.uid).map(p => `
                                         <option value="${p.id}" ${window.appState.selectedPriceClientId === p.id ? 'selected' : ''}>
                                             👤 ${window.getClientName(p.email)} (${p.email})
                                         </option>
@@ -2986,7 +2965,7 @@ service cloud.firestore {
                 await setDoc(pimpCardRef, {
                     url: value,
                     updatedAt: Date.now(),
-                    updatedBy: window.appState.user?.email || ADMIN_EMAIL
+                    updatedBy: window.appState.user?.email || 'Administrateur'
                 }, { merge: true });
                 window.showToast(value ? "Lien PIMP CARD enregistré." : "Lien PIMP CARD désactivé.");
             } catch (error) {
@@ -3086,7 +3065,7 @@ service cloud.firestore {
                 const msgRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
                 await addDoc(msgRef, {
                     userId: targetUserId,
-                    userEmail: window.appState.user?.email || ADMIN_EMAIL,
+                    userEmail: window.appState.user?.email || 'Administrateur',
                     text: text,
                     sender: 'admin',
                     senderName: 'Administrateur Sésame',
@@ -3400,7 +3379,7 @@ service cloud.firestore {
         window.adminVerifyClientProfile = (clientId) => {
             if (!window.appState.isAdmin) return;
             const client = window.appState.allProfiles.find(profile =>
-                profile.id === clientId && profile.email !== ADMIN_EMAIL && profile.authVerified !== true);
+                profile.id === clientId && profile.role !== 'admin' && profile.id !== window.appState.user?.uid && profile.authVerified !== true);
             if (!client) {
                 window.showToast("Ce profil est introuvable ou déjà vérifié.", "error");
                 return;
@@ -3412,7 +3391,7 @@ service cloud.firestore {
                         verificationRejected: false,
                         authVerificationSource: 'admin_manual_review',
                         authVerifiedAt: Date.now(),
-                        authVerifiedBy: window.appState.user?.email || ADMIN_EMAIL
+                        authVerifiedBy: window.appState.user?.email || 'Administrateur'
                     });
                     window.showToast("Profil vérifié : il est maintenant disponible dans les sélections clients.");
                 } catch (error) {
@@ -3424,7 +3403,7 @@ service cloud.firestore {
 
         window.openClientPersonalInfo = (clientId) => {
             if (!window.appState.isAdmin) return;
-            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.email !== ADMIN_EMAIL);
+            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.role !== 'admin' && profile.id !== window.appState.user?.uid);
             const modal = document.getElementById('client-personal-info-modal');
             if (!client || !modal) {
                 window.showToast("Informations client introuvables.", "error");
@@ -3454,7 +3433,7 @@ service cloud.firestore {
 
         window.adminRejectClientProfile = (clientId) => {
             if (!window.appState.isAdmin) return;
-            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.email !== ADMIN_EMAIL);
+            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.role !== 'admin' && profile.id !== window.appState.user?.uid);
             if (!client) return;
             window.showCyberConfirm(`Refuser la vérification du profil ${client.email} ?`, async () => {
                 try {
@@ -3462,7 +3441,7 @@ service cloud.firestore {
                         authVerified: false,
                         verificationRejected: true,
                         verificationRejectedAt: Date.now(),
-                        verificationRejectedBy: window.appState.user?.email || ADMIN_EMAIL
+                        verificationRejectedBy: window.appState.user?.email || 'Administrateur'
                     });
                     window.showToast("Vérification refusée. Le profil reste exclu des sélections clients.");
                 } catch (error) {
@@ -3473,14 +3452,14 @@ service cloud.firestore {
 
         window.adminDeleteClientProfile = (clientId) => {
             if (!window.appState.isAdmin) return;
-            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.email !== ADMIN_EMAIL);
+            const client = window.appState.allProfiles.find(profile => profile.id === clientId && profile.role !== 'admin' && profile.id !== window.appState.user?.uid);
             if (!client) return;
             window.showCyberConfirm(`Supprimer définitivement du site le profil ${client.email} et bloquer sa reconnexion ?`, async () => {
                 try {
                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'blockedAccounts', clientId), {
                         email: client.email,
                         blockedAt: Date.now(),
-                        blockedBy: window.appState.user?.email || ADMIN_EMAIL,
+                        blockedBy: window.appState.user?.email || 'Administrateur',
                         reason: 'profile_deleted_by_admin'
                     });
                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'communityMembers', clientId)).catch(() => {});
