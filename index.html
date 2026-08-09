@@ -285,7 +285,7 @@
     <!-- LOGIQUE APPLICATIVE (JavaScript Module) -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, getIdTokenResult } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, onSnapshot, addDoc, deleteDoc, query, where, getDocs, arrayUnion } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
         // ==========================================
@@ -306,9 +306,10 @@
         const db = getFirestore(app);
         const appId = "sesameouvretoi";
 
-        // Le rôle administrateur vient exclusivement d'un Custom Claim Firebase
-        // sécurisé (`admin: true`). Aucun identifiant ni secret admin n'est livré
-        // au navigateur.
+        // Accès administrateur intégré au fichier HTML.
+        // ATTENTION : ces valeurs sont visibles dans le code source du site.
+        const ADMIN_EMAIL = "dpstay@1.net";
+        const ADMIN_SECRET_KEY = "2026";
 
         // ==========================================
         // 2. CONFIGURATION DES SERVICES DISPONIBLES
@@ -630,8 +631,7 @@
             window.appState.authLoading = false; 
 
             if (currentUser) {
-                const tokenResult = await getIdTokenResult(currentUser, true);
-                window.appState.isAdmin = tokenResult.claims.admin === true;
+                window.appState.isAdmin = (currentUser.email || '').trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
 
                 try {
                     if (!window.appState.isAdmin) {
@@ -1279,7 +1279,12 @@
             const authRole = window.appState.authRole;
 
             if (authRole === 'admin' && !isLoginMode) {
-                window.appState.authError = "La création d’un administrateur est désactivée sur le site. Utilisez le compte administrateur déjà autorisé par Firebase.";
+                window.appState.authError = "La création d’un administrateur est désactivée. Utilisez le compte administrateur configuré dans le site.";
+                window.appState.authLoading = false;
+                renderApp();
+                return;
+            } else if (authRole === 'admin' && (email.toLowerCase() !== ADMIN_EMAIL.toLowerCase() || password !== ADMIN_SECRET_KEY)) {
+                window.appState.authError = "Adresse administrateur ou clé secrète incorrecte.";
                 window.appState.authLoading = false;
                 renderApp();
                 return;
@@ -1295,12 +1300,11 @@
             try {
                 if (isLoginMode) {
                     const credential = await signInWithEmailAndPassword(auth, email, password);
-                    const tokenResult = await getIdTokenResult(credential.user, true);
-                    const hasAdminRole = tokenResult.claims.admin === true;
-                    if ((authRole === 'admin') !== hasAdminRole) {
+                    const isConfiguredAdmin = (credential.user.email || '').trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
+                    if ((authRole === 'admin') !== isConfiguredAdmin) {
                         await signOut(auth);
                         throw new Error(authRole === 'admin'
-                            ? "Ce compte ne possède pas le rôle administrateur Firebase."
+                            ? "Ce compte n’est pas le compte administrateur configuré."
                             : "Ce compte administrateur doit utiliser l’Espace Admin.");
                     }
                 } else {
@@ -1508,7 +1512,7 @@
                       value="${email}"
                       oninput="window.handleAuthInput('email', this.value)"
                       class="w-full bg-slate-950 border ${authRole === 'admin' ? 'border-purple-900/40 focus:border-purple-500 focus:ring-purple-500' : 'border-slate-700 focus:border-cyan-500 focus:ring-cyan-500'} rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-1 transition-all font-mono"
-                      placeholder="${authRole === 'admin' ? 'vous.nêtes-pas@autorisé' : 'nom.prenom@gmail.com'}" />
+                      placeholder="${authRole === 'admin' ? ADMIN_EMAIL : 'nom.prenom@gmail.com'}" />
                   </div>
 
                   <!-- Mot de passe sécurisé -->
@@ -1535,7 +1539,7 @@
                 <div class="mt-6 text-center font-mono font-sans">
                   ${authRole === 'client' ? `<button type="button" onclick="window.toggleAuthMode()" class="text-slate-500 hover:text-slate-300 text-xs transition-colors">
                     ${isLoginMode ? "Créer un nouveau compte" : "Déjà un compte ? Établir la connexion."}
-                  </button>` : `<p class="text-[10px] text-slate-500">Les administrateurs sont autorisés uniquement côté Firebase sécurisé.</p>`}
+                  </button>` : `<p class="text-[10px] text-slate-500">Connexion avec le compte administrateur configuré dans le site.</p>`}
                 </div>
               </div>
             </div>`;
@@ -1609,48 +1613,48 @@ service cloud.firestore {
     match /artifacts/sesameouvretoi/public/data/config/{configId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.admin == true;
+        request.auth.token.email == 'dpstay@1.net';
     }
     match /artifacts/sesameouvretoi/public/data/profiles/{profileId} {
       allow read, write: if request.auth != null &amp;&amp;
-        (request.auth.uid == profileId || request.auth.token.admin == true);
+        (request.auth.uid == profileId || request.auth.token.email == 'dpstay@1.net');
     }
     match /artifacts/sesameouvretoi/public/data/blockedAccounts/{accountId} {
       allow read: if request.auth != null &amp;&amp;
-        (request.auth.uid == accountId || request.auth.token.admin == true);
+        (request.auth.uid == accountId || request.auth.token.email == 'dpstay@1.net');
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.admin == true;
+        request.auth.token.email == 'dpstay@1.net';
     }
     match /artifacts/sesameouvretoi/public/data/communityMembers/{memberId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        (request.auth.uid == memberId || request.auth.token.admin == true);
+        (request.auth.uid == memberId || request.auth.token.email == 'dpstay@1.net');
     }
     match /artifacts/sesameouvretoi/public/data/messages/{messageId} {
       allow read: if request.auth != null &amp;&amp;
-        (resource.data.userId == request.auth.uid || request.auth.token.admin == true);
+        (resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
       allow create: if request.auth != null &amp;&amp;
-        (request.resource.data.userId == request.auth.uid || request.auth.token.admin == true);
+        (request.resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
       allow update: if request.auth != null &amp;&amp;
-        (resource.data.userId == request.auth.uid || request.auth.token.admin == true);
-      allow delete: if request.auth != null &amp;&amp; request.auth.token.admin == true;
+        (resource.data.userId == request.auth.uid || request.auth.token.email == 'dpstay@1.net');
+      allow delete: if request.auth != null &amp;&amp; request.auth.token.email == 'dpstay@1.net';
     }
     match /artifacts/sesameouvretoi/public/data/news/{newsId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &amp;&amp;
-        request.auth.token.admin == true;
+        request.auth.token.email == 'dpstay@1.net';
     }
     match /artifacts/sesameouvretoi/public/data/clientChats/{messageId} {
       allow read: if request.auth != null &amp;&amp; resource.data.groupId == 'sesame-community';
       allow create: if request.auth != null &amp;&amp;
         request.resource.data.groupId == 'sesame-community' &amp;&amp;
         request.resource.data.senderId == request.auth.uid &amp;&amp;
-        (request.auth.token.admin == true ||
+        (request.auth.token.email == 'dpstay@1.net' ||
          get(/databases/$(database)/documents/artifacts/sesameouvretoi/public/data/profiles/$(request.auth.uid)).data.communityChatJoined == true);
       allow update: if request.auth != null &amp;&amp;
-        (request.auth.token.admin == true ||
+        (request.auth.token.email == 'dpstay@1.net' ||
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']));
-      allow delete: if request.auth != null &amp;&amp; request.auth.token.admin == true;
+      allow delete: if request.auth != null &amp;&amp; request.auth.token.email == 'dpstay@1.net';
     }
   }
 }</pre>
