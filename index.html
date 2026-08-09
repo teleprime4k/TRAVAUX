@@ -2200,7 +2200,7 @@ service cloud.firestore {
                     <div class="flex flex-col gap-4 sm:gap-6 w-full">
                         
                         <!-- WIDGET 1 : RÈGLES -->
-                        <div class="bg-[#0b1322]/90 border border-[#1e293b]/70 p-4 sm:p-5 rounded-2xl flex flex-col gap-4 shadow-[0_4px_25px_rgba(0,0,0,0.3)] w-full">
+                        <div id="billing-rules" class="mobile-anchor bg-[#0b1322]/90 border border-[#1e293b]/70 p-4 sm:p-5 rounded-2xl flex flex-col gap-4 shadow-[0_4px_25px_rgba(0,0,0,0.3)] w-full">
                             <h3 class="text-xs font-bold text-white font-mono uppercase tracking-wider border-b border-slate-800/80 pb-2 flex items-center gap-2">
                                 <i data-lucide="help-circle" class="w-4 h-4 text-cyan-400"></i> Règles de Facturation
                             </h3>
@@ -2948,7 +2948,7 @@ service cloud.firestore {
         window.applyMobileRoute = (targetId, shouldScroll = true) => {
             if (!window.matchMedia('(max-width: 767px)').matches) return;
             const routeIds = [
-                'overview-section', 'services-section', 'client-support', 'client-payments',
+                'overview-section', 'billing-rules', 'services-section', 'client-support', 'client-payments',
                 'news-section', 'community-section', 'admin-console', 'admin-quotes',
                 'admin-support', 'admin-services', 'admin-stripe',
                 'admin-pending-profiles', 'admin-clients'
@@ -2972,6 +2972,11 @@ service cloud.firestore {
             }
             target.classList.remove('mobile-route-hidden');
             target.classList.add('mobile-route-active');
+            if (targetId === 'dashboard-top') {
+                const billingRules = document.getElementById('billing-rules');
+                billingRules?.classList.remove('mobile-route-hidden');
+                billingRules?.classList.add('mobile-route-active');
+            }
             window.appState.mobileActiveRoute = targetId;
             if (shouldScroll) window.scrollTo({ top: 0, behavior: 'smooth' });
         };
@@ -3828,4 +3833,3 @@ service cloud.firestore {
     </script>
 </body>
 </html>
-
