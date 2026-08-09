@@ -83,6 +83,13 @@
             .mobile-shortcuts-sheet:not(.hidden) { display: flex; }
             .mobile-shortcut-grid button { min-height: 82px; }
             #toast-container { bottom: 88px; left: 12px; right: 12px; max-width: none; }
+            .mobile-route-hidden { display: none !important; }
+            .mobile-route-active { animation: mobileRouteIn .22s ease-out; }
+            .mobile-route-active-parent { display: flex !important; padding: 0 !important; border: 0 !important; background: transparent !important; box-shadow: none !important; overflow: visible !important; }
+        }
+        @keyframes mobileRouteIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -590,6 +597,9 @@
                 root.innerHTML = getMainDashboardHTML();
             }
             lucide.createIcons({ root: root });
+
+            // Sur téléphone, une seule rubrique est affichée à la fois.
+            window.setTimeout(() => window.applyMobileRoute?.(window.appState.mobileActiveRoute || 'dashboard-top', false), 0);
 
             // Auto-scroll des tchats après le rendu
             setTimeout(() => {
@@ -2935,13 +2945,46 @@ service cloud.firestore {
             document.body.style.overflow = '';
         };
 
+        window.applyMobileRoute = (targetId, shouldScroll = true) => {
+            if (!window.matchMedia('(max-width: 767px)').matches) return;
+            const routeIds = [
+                'overview-section', 'services-section', 'client-support', 'client-payments',
+                'news-section', 'community-section', 'admin-console', 'admin-quotes',
+                'admin-support', 'admin-services', 'admin-stripe',
+                'admin-pending-profiles', 'admin-clients'
+            ];
+            const resolvedId = targetId === 'dashboard-top' ? 'overview-section' : targetId;
+            routeIds.forEach(id => {
+                const element = document.getElementById(id);
+                element?.classList.add('mobile-route-hidden');
+                element?.classList.remove('mobile-route-active', 'mobile-route-active-parent');
+            });
+
+            const target = document.getElementById(resolvedId);
+            if (!target) return;
+            let ancestor = target.parentElement;
+            while (ancestor && ancestor.id !== 'dashboard-top') {
+                if (routeIds.includes(ancestor.id)) {
+                    ancestor.classList.remove('mobile-route-hidden');
+                    ancestor.classList.add('mobile-route-active-parent');
+                }
+                ancestor = ancestor.parentElement;
+            }
+            target.classList.remove('mobile-route-hidden');
+            target.classList.add('mobile-route-active');
+            window.appState.mobileActiveRoute = targetId;
+            if (shouldScroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
         window.mobileGoTo = (targetId) => {
             window.closeMobileShortcuts();
+            if (window.matchMedia('(max-width: 767px)').matches) {
+                window.applyMobileRoute(targetId);
+                return;
+            }
             const target = document.getElementById(targetId);
             if (!target) return;
             target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            target.classList.add('ring-2', 'ring-cyan-500/60');
-            window.setTimeout(() => target.classList.remove('ring-2', 'ring-cyan-500/60'), 1200);
         };
 
         // --- EXÉCUTION DU RENDU GLOBAL & ACTIONS ---
@@ -3785,3 +3828,4 @@ service cloud.firestore {
     </script>
 </body>
 </html>
+
