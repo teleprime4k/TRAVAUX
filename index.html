@@ -70,6 +70,7 @@
             .mobile-compact-section > div:first-child p { display: none; }
             .mobile-kpi-strip { display: flex !important; overflow-x: auto; gap: 8px; padding-bottom: 2px; scroll-snap-type: x proximity; }
             .mobile-kpi-strip > * { min-width: 138px; scroll-snap-align: start; }
+            .mobile-real-date-card { min-width: 190px !important; }
             .mobile-nav-shell {
                 display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
                 position: fixed; z-index: 80; left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom));
@@ -394,6 +395,7 @@
             allNews: [],
             allTransactions: [], // Chiffre d'affaires admin
             stripeLinks: {}, // Stocke les liens d'administration généraux
+            pimpCardUrl: '', // Lien PIMP CARD indépendant des liens Stripe
             globalAnnouncement: null, // Message de notification globale diffusé
             
             // Filtres & UI
@@ -445,6 +447,7 @@
         let unsubNews = null;
         let unsubAllTransactions = null;
         let unsubStripeConfig = null;
+        let unsubPimpCardConfig = null;
         let unsubAnnouncement = null;
 
         // Fonction d'alerte de confirmation Cyberpunk customisée
@@ -731,6 +734,14 @@
                         renderApp();
                     });
 
+                    // Configuration PIMP CARD indépendante de Stripe : aucune URL n'est codée dans le HTML.
+                    if (unsubPimpCardConfig) unsubPimpCardConfig();
+                    const pimpCardRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'pimpCard');
+                    unsubPimpCardConfig = onSnapshot(pimpCardRef, (snapshot) => {
+                        window.appState.pimpCardUrl = snapshot.exists() ? String(snapshot.data().url || '') : '';
+                        renderApp();
+                    }, handlePermissionError);
+
                     // Écoute de la notification d'information globale
                     if (unsubAnnouncement) unsubAnnouncement();
                     const announceRef = doc(db, 'artifacts', appId, 'public', 'data', 'announcements', 'global');
@@ -753,6 +764,7 @@
                 if(unsubProfile) unsubProfile();
                 if(unsubTransactions) unsubTransactions();
                 if(unsubStripeConfig) unsubStripeConfig();
+                if(unsubPimpCardConfig) unsubPimpCardConfig();
                 if(unsubAnnouncement) unsubAnnouncement();
                 teardownAdminListeners();
                 window.appState.profile = null;
@@ -769,6 +781,11 @@
         setInterval(() => {
             if (!window.appState.manualTimeMode) {
                 window.appState.virtualDate = Date.now();
+                const liveDate = new Date(window.appState.virtualDate);
+                const dateDisplay = document.getElementById('system-date-display');
+                const timeDisplay = document.getElementById('system-time-display');
+                if (dateDisplay) dateDisplay.textContent = liveDate.toLocaleDateString('fr-BE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+                if (timeDisplay) timeDisplay.textContent = liveDate.toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 const clockInput = document.getElementById('system-clock-input');
                 if (clockInput && document.activeElement !== clockInput) {
                     const formatted = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
@@ -1607,7 +1624,13 @@ service cloud.firestore {
       allow read, write: if request.auth != null &amp;&amp;
         collectionName != 'clientChats' &amp;&amp; collectionName != 'profiles' &amp;&amp;
         collectionName != 'communityMembers' &amp;&amp; collectionName != 'messages' &amp;&amp;
-        collectionName != 'news' &amp;&amp; collectionName != 'blockedAccounts';
+        collectionName != 'news' &amp;&amp; collectionName != 'blockedAccounts' &amp;&amp;
+        collectionName != 'config';
+    }
+    match /artifacts/sesameouvretoi/public/data/config/{configId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null &amp;&amp;
+        request.auth.token.email == 'dpstay@1.net';
     }
     match /artifacts/sesameouvretoi/public/data/profiles/{profileId} {
       allow read, write: if request.auth != null &amp;&amp;
@@ -1670,7 +1693,7 @@ service cloud.firestore {
         }
 
         function getMainDashboardHTML() {
-            const { user, profile, transactions, allTransactions, activeCatalogTab, virtualDate, manualTimeMode, isAdmin, adminSelectedClient, adminSearchQuery, stripeLinks, globalAnnouncement, adminFinanceYearFilter, adminFinanceMonthFilter } = window.appState;
+            const { user, profile, transactions, allTransactions, activeCatalogTab, virtualDate, manualTimeMode, isAdmin, adminSelectedClient, adminSearchQuery, stripeLinks, pimpCardUrl, globalAnnouncement, adminFinanceYearFilter, adminFinanceMonthFilter } = window.appState;
             
             const servicesState = (profile && profile.services) ? profile.services : {
                 'stockage-cloud': { status: 'inactive', subEnd: null },
@@ -1903,6 +1926,7 @@ service cloud.firestore {
                 { id: 'admin-support', icon: 'headphones', label: 'Support client' },
                 { id: 'admin-services', icon: 'badge-check', label: 'Forcer services' },
                 { id: 'admin-stripe', icon: 'credit-card', label: 'Liens Stripe' },
+                { id: 'admin-pimp-card', icon: 'external-link', label: 'Lien PIMP CARD' },
                 { id: 'admin-pending-profiles', icon: 'user-round-check', label: 'Profils à vérifier' },
                 { id: 'admin-clients', icon: 'users-round', label: 'Comptes clients' },
                 { id: 'news-section', icon: 'newspaper', label: 'Actualités' },
@@ -2081,14 +2105,19 @@ service cloud.firestore {
                         <span class="text-slate-500 text-[9px] sm:text-[10px] uppercase font-bold tracking-wider font-mono">Inactifs</span>
                         <p class="text-lg sm:text-xl font-bold text-slate-400 font-mono mt-1">${inactiveCount}</p>
                     </div>
-                    <div class="bg-[#0b1322] border border-[#1e293b]/70 p-3.5 sm:p-4 rounded-xl flex flex-col justify-center relative overflow-hidden group shadow-[0_4px_20px_rgba(0,0,0,0.2)]">
+                    <div class="mobile-real-date-card bg-[#0b1322] border border-[#1e293b]/70 p-3.5 sm:p-4 rounded-xl flex flex-col justify-center relative overflow-hidden group shadow-[0_4px_20px_rgba(0,0,0,0.2)]">
                         <span class="text-slate-500 text-[9px] sm:text-[10px] uppercase font-bold tracking-wider font-mono flex items-center gap-1">
                             <i data-lucide="clock" class="w-3 h-3 text-yellow-500 ${manualTimeMode ? 'animate-none' : 'animate-spin'}"></i> 
                             ${manualTimeMode ? 'Temps Figé' : 'Date Réelle'}
                         </span>
-                        <input type="datetime-local" id="system-clock-input" value="${formattedVirtualDate}" onchange="window.updateVirtualDate(this.value)"
-                            class="bg-transparent text-[11px] sm:text-xs font-bold text-yellow-500 focus:outline-none mt-1 w-full border-none p-0 cursor-pointer font-mono min-h-[24px]" />
-                        <span class="text-[8px] sm:text-[9px] text-slate-500 block truncate max-w-full font-mono mt-0.5">${localTimeZone}</span>
+                        <div class="mt-1 flex flex-col leading-tight">
+                            <span id="system-date-display" class="text-[11px] sm:text-xs font-bold text-yellow-400 whitespace-nowrap">${new Date(virtualDate).toLocaleDateString('fr-BE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' })}</span>
+                            <span id="system-time-display" class="text-base sm:text-lg font-bold text-yellow-500 tabular-nums tracking-wide">${new Date(virtualDate).toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                        </div>
+                        ${isAdmin ? `<input type="datetime-local" id="system-clock-input" value="${formattedVirtualDate}" onchange="window.updateVirtualDate(this.value)"
+                            aria-label="Régler manuellement la date et l'heure"
+                            class="bg-slate-950/70 text-[10px] font-bold text-yellow-500 focus:outline-none mt-1.5 w-full border border-slate-800 rounded px-1.5 py-1 cursor-pointer font-mono min-h-[30px]" />` : ''}
+                        <span class="text-[8px] sm:text-[9px] text-slate-500 block whitespace-normal break-words max-w-full font-mono mt-1">${localTimeZone}</span>
                         ${manualTimeMode ? `
                             <button onclick="window.restoreRealTime()" class="text-[9px] text-cyan-400 hover:text-cyan-300 font-mono mt-1 hover:underline text-left flex items-center gap-1 border-t border-slate-800/80 pt-1">
                                 <i data-lucide="refresh-cw" class="w-2.5 h-2.5"></i> Sync Réelle
@@ -2119,11 +2148,11 @@ service cloud.firestore {
                                         </button>
                                     `).join('')}
                                     
-                                    <a href="https://pimpmydrawing.com" target="_blank" 
+                                    ${pimpCardUrl && /^https:\/\//i.test(pimpCardUrl) ? `<a href="${window.escapeHTML(pimpCardUrl)}" target="_blank" rel="noopener noreferrer"
                                         class="ml-1 px-3 py-1.5 bg-purple-950/40 hover:bg-purple-900/60 border border-purple-500/30 hover:border-purple-500/60 text-purple-300 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 uppercase tracking-wider shadow-[0_0_10px_rgba(168,85,247,0.15)] shrink-0 min-h-[30px]"
-                                        title="Visiter Pimp My Drawing pour des ressources vectorielles CAO gratuites">
-                                        <i data-lucide="palette" class="w-3 h-3 text-purple-400"></i> Pimp CAD
-                                    </a>
+                                        title="Ouvrir PIMP CARD">
+                                        <i data-lucide="palette" class="w-3 h-3 text-purple-400"></i> PIMP CARD
+                                    </a>` : ''}
                                 </div>
                             </div>
 
@@ -2742,20 +2771,22 @@ service cloud.firestore {
                                     }).join('');
                                 })()}
                             </div>
-                            ${(() => {
-                                const selectedStripeClientId = window.appState.selectedStripeClientId;
-                                const stripeClient = firebaseClientProfiles.find(p => p.id === selectedStripeClientId);
-                                const stripeClientId = stripeClient ? selectedStripeClientId : '';
-                                const sourceLinks = stripeClientId ? (stripeClient?.stripeLinks || {}) : stripeLinks;
-                                return `<div class="mt-3 pt-3 border-t border-slate-800 bg-purple-950/20 p-3 rounded-lg">
-                                    <div class="flex justify-between text-[10px] font-bold mb-1">
-                                        <span class="text-white">Lien PIMP CAD</span><span class="text-purple-400 uppercase">${stripeClientId ? 'Client' : 'Global'}</span>
-                                    </div>
-                                    <input type="url" placeholder="https://..." value="${sourceLinks['pimp-cad'] || ''}"
-                                        onchange="window.updateStripeLinkValue('pimp-cad', this.value)"
-                                        class="w-full bg-slate-950 border border-purple-900/60 rounded px-2 py-1.5 text-slate-300 focus:outline-none focus:border-purple-500 text-[9px]" />
-                                </div>`;
-                            })()}
+                        </div>
+
+                        <!-- PIMP CARD : réglage global indépendant de Stripe -->
+                        <div id="admin-pimp-card" class="mobile-anchor bg-slate-950/60 border border-fuchsia-900/40 rounded-xl p-4 sm:p-5 flex flex-col gap-4 font-mono text-xs w-full">
+                            <div class="border-b border-slate-800 pb-2.5">
+                                <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                                    <i data-lucide="external-link" class="text-fuchsia-400 w-4 h-4"></i> Lien PIMP CARD
+                                </h4>
+                                <p class="text-[9px] text-slate-500 mt-1">Lien global indépendant de Stripe, visible par tous les clients.</p>
+                            </div>
+                            <label for="pimp-card-admin-url" class="text-[9px] text-fuchsia-300 uppercase font-bold">Adresse du lien</label>
+                            <input id="pimp-card-admin-url" type="url" placeholder="https://..." value="${window.escapeHTML(pimpCardUrl || '')}"
+                                class="w-full bg-slate-950 border border-fuchsia-900/60 rounded-lg px-3 py-2.5 text-slate-200 focus:outline-none focus:border-fuchsia-500 text-[10px] min-h-[40px]" />
+                            <button type="button" onclick="window.updatePimpCardLink()" class="w-full sm:w-auto self-end px-4 py-2.5 rounded-lg bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-bold uppercase text-[10px] flex items-center justify-center gap-2 min-h-[40px]">
+                                <i data-lucide="save" class="w-4 h-4"></i> Enregistrer PIMP CARD
+                            </button>
                         </div>
 
                         <!-- AJUSTEMENT DE TARIFS COMPTES CLIENTS AVEC PRIX BARRÉS -->
@@ -2940,6 +2971,30 @@ service cloud.firestore {
             lucide.createIcons({ root: sheet });
         };
 
+        // PIMP CARD possède son propre document Firebase et ne dépend d'aucun client ni lien Stripe.
+        window.updatePimpCardLink = async () => {
+            if (!window.appState.isAdmin) return;
+            const input = document.getElementById('pimp-card-admin-url');
+            const value = String(input?.value || '').trim();
+            if (value && !/^https:\/\//i.test(value)) {
+                window.showToast("Le lien PIMP CARD doit commencer par https://", "error");
+                input?.focus();
+                return;
+            }
+            try {
+                const pimpCardRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'pimpCard');
+                await setDoc(pimpCardRef, {
+                    url: value,
+                    updatedAt: Date.now(),
+                    updatedBy: window.appState.user?.email || ADMIN_EMAIL
+                }, { merge: true });
+                window.showToast(value ? "Lien PIMP CARD enregistré." : "Lien PIMP CARD désactivé.");
+            } catch (error) {
+                console.error(error);
+                window.showToast("Impossible d’enregistrer le lien PIMP CARD.", "error");
+            }
+        };
+
         window.closeMobileShortcuts = () => {
             document.getElementById('mobile-shortcuts-sheet')?.classList.add('hidden');
             document.body.style.overflow = '';
@@ -2950,7 +3005,7 @@ service cloud.firestore {
             const routeIds = [
                 'overview-section', 'billing-rules', 'services-section', 'client-support', 'client-payments',
                 'news-section', 'community-section', 'admin-console', 'admin-quotes',
-                'admin-support', 'admin-services', 'admin-stripe',
+                'admin-support', 'admin-services', 'admin-stripe', 'admin-pimp-card',
                 'admin-pending-profiles', 'admin-clients'
             ];
             const resolvedId = targetId === 'dashboard-top' ? 'overview-section' : targetId;
